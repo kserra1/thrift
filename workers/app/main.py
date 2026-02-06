@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 import logging
 
+from app.batch import BatchProcessor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,20 +14,26 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Thrift Worker",
     description="High-performance ML model serving",
-    version="0.1.0"
+    version="0.2.0"
 )
 
 MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "iris_v1.pkl"
 model = None
+batch_processor = None
 
 
 @app.on_event("startup")
 async def load_model():
     """Load model into memory on startup"""
-    global model
+    global model, batch_processor
     try:
         model = joblib.load(MODEL_PATH)
-        logger.info(f"Model loaded from {MODEL_PATH}")
+        batch_processor = BatchProcessor(
+            model,
+            max_batch_size=32,
+            max_wait_ms=50
+        )
+        logger.info("Batch processor initialized (max_batch_size=32, max_wait_ms=50)")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
@@ -53,7 +60,8 @@ async def health():
     """Health check endpoint for load balancer"""
     return {
         "status": "healthy",
-        "model_loaded": model is not None
+        "model_loaded": model is not None,
+        "batch_processor": batch_processor is not None
     }
 
 
@@ -66,20 +74,19 @@ async def predict(request: PredictRequest):
     Input: List of features (length must match model's expected input)
     Output: Predicted class
     """
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not initialized")
     
     try:
-        # Convert to numpy array
+        # Use batch processor (automatically batches with concurrent requests)
         input_array = np.array(request.features).reshape(1, -1)
         
         # Predict
-        prediction = model.predict(input_array)
+        prediction = await batch_processor.predict(request.features)
         
-        logger.info(f"Prediction: {prediction[0]} for input: {request.features}")
         
         return PredictResponse(
-            prediction=int(prediction[0])
+            prediction=prediction
         )
     
     except Exception as e:
@@ -91,6 +98,7 @@ async def predict(request: PredictRequest):
 async def root():
     return {
         "service": "Thrift Worker",
-        "version": "0.1.0",
-        "status": "running"
+        "version": "0.2.0",
+        "status": "running",
+        "features": ["request_batching"]
     }
