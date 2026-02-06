@@ -23,6 +23,11 @@ y_pred = model.predict(X_test)
 accuracy = accuracy_score(y_test, y_pred)
 print(f"Model accuracy: {accuracy:.2%}")
 
+output_path = 'iris_v1.pkl'
+
 # Save
-joblib.dump(model, 'iris_v1.pkl')
-print("Model saved to iris_v1.pkl")
+joblib.dump(model, output_path)
+print(f"Model saved to {output_path}")
+print(f"\nNext steps:")
+print(f"  1. Register: python scripts/register_model.py --model-path {output_path} --name iris --version v1")
+print(f"  2. Serve:    MODEL_NAME=iris MODEL_VERSION=v1 uvicorn workers.app.main:app")

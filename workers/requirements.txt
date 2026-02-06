@@ -48,3 +48,8 @@ Werkzeug==3.1.5
 zipp==3.23.0
 zope.event==6.0
 zope.interface==8.0.1
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+alembic==1.13.1
+minio==7.2.3
+pydantic-settings==2.1.0
