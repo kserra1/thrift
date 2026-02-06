@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thrift-worker
+  namespace: thrift
+spec:
+  # Number of worker pods
+  # This can be scaled up/down manually or with autoscaling
+  replicas: 3
+  
+  selector:
+    matchLabels:
+      app: thrift-worker
+  
+  template:
+    metadata:
+      labels:
+        app: thrift-worker
+    spec:
+      containers:
+      - name: worker
+        image: thrift-worker:latest
+        imagePullPolicy: IfNotPresent
+        # IfNotPresent: Use local image if available (for minikube)
+        # Always: Always pull from registry (for production)
+        
+        ports:
+        - containerPort: 8000
+          name: http
+        
+        env:
+        # Environment variables from ConfigMap
+        - name: DATABASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: thrift-config
+              key: DATABASE_URL
+        - name: MINIO_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: thrift-config
+              key: MINIO_ENDPOINT
+        - name: MINIO_SECURE
+          valueFrom:
+            configMapKeyRef:
+              name: thrift-config
+              key: MINIO_SECURE
+        - name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: thrift-config
+              key: BUCKET_NAME
+        
+        # Environment variables from Secret
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: thrift-secrets
+              key: MINIO_ACCESS_KEY
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: thrift-secrets
+              key: MINIO_SECRET_KEY
+        
+        resources:
+          # Resource limits prevent one pod from hogging all resources
+          requests:
+            # Minimum resources guaranteed
+            memory: "512Mi"
+            cpu: "500m"  # 500 millicores = 0.5 CPU
+          limits:
+            # Maximum resources allowed
+            memory: "2Gi"
+            cpu: "2000m"  # 2 CPUs
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          # After 3 failures, pod is restarted
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          # Until this passes, pod won't receive traffic from service
+
+---
+# Service for workers
+apiVersion: v1
+kind: Service
+metadata:
+  name: thrift-worker-service
+  namespace: thrift
+spec:
+  selector:
+    app: thrift-worker
+    # Routes to all pods with label app=thrift-worker
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+  type: ClusterIP
+  # Kubernetes automatically load balances across all matching pods
+  sessionAffinity: None
+  # None: Round-robin load balancing
+  # ClientIP: Sticky sessions (same client → same pod)

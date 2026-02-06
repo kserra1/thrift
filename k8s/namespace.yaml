@@ -1,0 +1,7 @@
+# Namespace isolates resources
+# Like a folder for organizing k8s objects
+# Prevents name conflicts between different applications
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: thrift

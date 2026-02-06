@@ -1,0 +1,103 @@
+# PersistentVolumeClaim: Request for storage
+# This persists database data across pod restarts
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: thrift
+spec:
+  accessModes:
+    - ReadWriteOnce  # Can be mounted by one node at a time
+  resources:
+    requests:
+      storage: 10Gi  # Request 10GB of storage
+
+# Deployment: Manages postgres pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: thrift
+spec:
+  replicas: 1  # Only one postgres instance (not horizontally scalable)
+  selector:
+    matchLabels:
+      app: postgres
+      # Selector matches pods with these labels
+  template:
+    # Pod template
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        # Environment variables from ConfigMap and Secret
+        - name: POSTGRES_USER
+          value: "thrift"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: thrift-secrets
+              key: POSTGRES_PASSWORD
+              # Reads value from Secret instead of hardcoding
+        - name: POSTGRES_DB
+          value: "thrift"
+        volumeMounts:
+        # Mount PVC to container
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+          # This is where postgres stores data inside container
+        livenessProbe:
+          # Kubernetes uses this to check if container is alive
+          # If fails, container is restarted
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - thrift
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          # Kubernetes uses this to check if container is ready to accept traffic
+          # If fails, pod is removed from service endpoints
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - thrift
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      # Define volume from PVC
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+# Service: Stable network endpoint
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: thrift
+spec:
+  selector:
+    app: postgres
+    # Route traffic to pods with this label
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+  type: ClusterIP
+  # ClusterIP: Only accessible within cluster (not from outside)
+  # Other types:
+  # - NodePort: Exposes on each node's IP
+  # - LoadBalancer: Creates external load balancer (cloud only)
