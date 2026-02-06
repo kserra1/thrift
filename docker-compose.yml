@@ -1,8 +1,13 @@
 version: '3.8'
 
+networks:
+  thrift-net:
+    driver: bridge
+
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: thrift-postgres
     environment:
       POSTGRES_USER: thrift
       POSTGRES_PASSWORD: dev_password
@@ -11,31 +16,39 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - thrift-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U thrift"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
+    container_name: thrift-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"  # API
-      - "9001:9001"  # Console
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
+    networks:
+      - thrift-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   createbuckets:
     image: minio/mc:latest
+    container_name: thrift-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -46,6 +59,50 @@ services:
       /usr/bin/mc anonymous set download myminio/models;
       exit 0;
       "
+    networks:
+      - thrift-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: thrift-worker:latest
+    environment:
+      DATABASE_URL: postgresql://thrift:dev_password@postgres:5432/thrift
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      BUCKET_NAME: models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+    networks:
+      - thrift-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  nginx:
+    image: nginx:alpine
+    container_name: thrift-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - worker
+    networks:
+      - thrift-net
+    restart: unless-stopped
 
 volumes:
   postgres_data:
