@@ -3,26 +3,41 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import joblib
 import logging
-from typing import List
+from typing import List, Optional
 import os
 import tempfile
 from dotenv import load_dotenv
 
+from .model_manager import ModelManager
 from .batch import BatchProcessor
 from .storage import ModelStorage
-from .database import SessionLocal, ModelMetadata, init_db
+from .database import init_db
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
 
-app = FastAPI(title="ML Serving Platform")
+app = FastAPI(
+    title="ML Serving Platform",
+    description="Dynamic multi-model serving with on-demand loading",
+    version="2.0.0"
+)
 
-# Global state
-model = None
-batch_processor = None
-model_version = None
+# Global model manager
+model_manager: Optional[ModelManager] = None
+
+
+class LoadModelRequest(BaseModel):
+    model_name: str
+    version: str
+    batch_size: int = 32
+    batch_wait_ms: int = 50
+
+
+class UnloadModelRequest(BaseModel):
+    model_name: str
+    version: str
 
 
 class PredictRequest(BaseModel):
@@ -31,82 +46,168 @@ class PredictRequest(BaseModel):
 
 class PredictResponse(BaseModel):
     prediction: int
+    model_name: str
     model_version: str
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model from S3 on startup."""
-    global model, batch_processor, model_version
+    """Initialize model manager and database."""
+    global model_manager
     
     # Initialize database
     init_db()
     
-    # Get model metadata from database
-    model_name = os.getenv("MODEL_NAME", "iris")
-    print(os.getenv("DATABASE_URL"), "TESTST")
-    version = os.getenv("MODEL_VERSION", "v1")
+    # Create model manager (max 5 models in memory by default)
+    max_models = int(os.getenv("MAX_MODELS_IN_MEMORY", 5))
+    model_manager = ModelManager(max_models_in_memory=max_models)
     
-    db = SessionLocal()
+    logger.info(f"ML Serving Platform started (max_models={max_models})")
+    logger.info("Models can be loaded dynamically via POST /models/load")
+
+
+# ===== Model Management Endpoints =====
+
+@app.post("/models/load")
+async def load_model(request: LoadModelRequest):
+    """
+    Load a model from the registry into memory.
+    
+    Example:
+        POST /models/load
+        {
+            "model_name": "iris",
+            "version": "v1",
+            "batch_size": 32,
+            "batch_wait_ms": 50
+        }
+    """
     try:
-        metadata = db.query(ModelMetadata).filter(
-            ModelMetadata.model_name == model_name,
-            ModelMetadata.version == version
-        ).first()
-        
-        if not metadata:
-            raise RuntimeError(
-                f"Model {model_name}:{version} not found in database. "
-                "Train and upload a model first."
-            )
-        
-        # Download model from S3
-        storage = ModelStorage()
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pkl') as tmp:
-            local_path = tmp.name
-        
-        storage.download_model(metadata.s3_path, local_path)
-        model = joblib.load(local_path)
-        os.remove(local_path)  # Cleanup
-        
-        model_version = f"{model_name}_{version}"
-        batch_processor = BatchProcessor(model, max_batch_size=32, max_wait_ms=50)
-        
-        logger.info(f"Model {model_version} loaded from {metadata.s3_path}")
-        logger.info(f"Metadata: {metadata.model_metadata}")  # Changed from 'metadata'
-        
-    finally:
-        db.close()
+        result = model_manager.load_model(
+            model_name=request.model_name,
+            version=request.version,
+            batch_size=request.batch_size,
+            batch_wait_ms=request.batch_wait_ms
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error loading model: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
 
-@app.post("/predict", response_model=PredictResponse)
-async def predict(request: PredictRequest):
-    """Make a prediction."""
-    if batch_processor is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+@app.post("/models/unload")
+async def unload_model(request: UnloadModelRequest):
+    """
+    Manually unload a model from memory.
     
-    if len(request.features) != 4:
-        raise HTTPException(
-            status_code=400,
-            detail="Expected 4 features for Iris classification"
+    Example:
+        POST /models/unload
+        {
+            "model_name": "iris",
+            "version": "v1"
+        }
+    """
+    result = model_manager.unload_model(
+        model_name=request.model_name,
+        version=request.version
+    )
+    return result
+
+
+@app.get("/models")
+async def list_loaded_models():
+    """
+    List all currently loaded models in memory.
+    
+    Returns:
+        {
+            "loaded_models": [...],
+            "count": 2,
+            "max_capacity": 5
+        }
+    """
+    loaded = model_manager.get_loaded_models()
+    return {
+        "loaded_models": loaded,
+        "count": len(loaded),
+        "max_capacity": model_manager.max_models
+    }
+
+
+# ===== Prediction Endpoints =====
+
+@app.post("/models/{model_name}/versions/{version}/predict", response_model=PredictResponse)
+async def predict(model_name: str, version: str, request: PredictRequest):
+    """
+    Make a prediction using a specific model version.
+    
+    The model must be loaded first via POST /models/load.
+    
+    Example:
+        POST /models/iris/versions/v1/predict
+        {
+            "features": [5.1, 3.5, 1.4, 0.2]
+        }
+    """
+    try:
+        prediction = await model_manager.predict(
+            model_name=model_name,
+            version=version,
+            features=request.features
+        )
+        
+        return PredictResponse(
+            prediction=int(prediction),
+            model_name=model_name,
+            model_version=version
         )
     
-    prediction = await batch_processor.predict(request.features)
-    return PredictResponse(prediction=int(prediction), model_version=model_version)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Prediction error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(e)}"
+        )
 
+
+# ===== Health & Info Endpoints =====
 
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    loaded_models = model_manager.get_loaded_models()
     return {
         "status": "healthy",
-        "model_loaded": model is not None,
-        "model_version": model_version,
-        "batch_processor": batch_processor is not None
+        "loaded_models_count": len(loaded_models),
+        "max_capacity": model_manager.max_models,
+        "models": [f"{m['model_name']}:{m['version']}" for m in loaded_models]
     }
 
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
-    return {"message": "ML Serving Platform", "version": model_version}
+    """Root endpoint with API info."""
+    return {
+        "service": "ML Serving Platform",
+        "version": "2.0.0",
+        "features": [
+            "Dynamic model loading",
+            "Multi-model serving",
+            "Automatic LRU eviction",
+            "Batch processing"
+        ],
+        "endpoints": {
+            "load_model": "POST /models/load",
+            "unload_model": "POST /models/unload",
+            "list_models": "GET /models",
+            "predict": "POST /models/{name}/versions/{version}/predict",
+            "health": "GET /health"
+        }
+    }
