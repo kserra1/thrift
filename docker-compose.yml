@@ -74,6 +74,8 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_SECURE: "false"
       BUCKET_NAME: models
+      LOG_LEVEL: INFO #DEBUG, INFO, WARNING, ERROR 
+      MAX_MODELS_IN_MEMORY: "5"
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,6 +93,43 @@ services:
       retries: 3
       start_period: 10s
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: thrift-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+    - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro      
+    - prometheus_data:/prometheus
+    networks:
+      - thrift-net 
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: thrift-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - thrift-net
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+  
+
+
   nginx:
     image: nginx:alpine
     container_name: thrift-nginx
@@ -107,3 +146,5 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  prometheus_data:
+  grafana_data:

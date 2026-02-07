@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -36,6 +37,7 @@ class PredictionLog(Base):
     __tablename__ = "prediction_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+    correlation_id = Column(String, index=True)  # For request tracing
     model_name = Column(String, index=True)
     model_version = Column(String)
     request_id = Column(String, index=True)
@@ -43,6 +45,17 @@ class PredictionLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     input_features = Column(JSON)
     prediction = Column(Integer)
+
+    # Performance metrics
+    latency_ms = Column(Float)
+    batch_size = Column(Integer)
+
+    # Input/output (for retraining)
+    input_features = Column(JSON)
+    prediction = Column(Integer)
+
+    #Additional context
+    client_ip = Column(String)
 
 
 def init_db():

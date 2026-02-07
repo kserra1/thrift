@@ -1,0 +1,46 @@
+# Prometheus configuration
+global:
+  scrape_interval: 15s  # Scrape targets every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  
+  # Attach these labels to all time series
+  external_labels:
+    cluster: 'thrift-local'
+    environment: 'development'
+
+# Scrape configurations
+scrape_configs:
+  # Scrape ML worker pods
+  - job_name: 'ml-workers'
+    
+    # Kubernetes service discovery
+    kubernetes_sd_configs:
+    - role: pod
+      namespaces:
+        names:
+        - thrift
+    
+    # Only scrape pods with specific labels
+    relabel_configs:
+    # Keep only pods with app=thrift-worker label
+    - source_labels: [__meta_kubernetes_pod_label_app]
+      action: keep
+      regex: thrift-worker
+    
+    # Use pod name as instance label
+    - source_labels: [__meta_kubernetes_pod_name]
+      target_label: pod
+    
+    # Use pod IP for scraping
+    - source_labels: [__meta_kubernetes_pod_ip]
+      target_label: __address__
+      replacement: '${1}:8000'  # Assuming metrics on port 8000
+    
+    # Add namespace label
+    - source_labels: [__meta_kubernetes_namespace]
+      target_label: namespace
+
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+    - targets: ['localhost:9090']

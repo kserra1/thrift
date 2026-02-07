@@ -7,20 +7,31 @@ This handles:
 - Thread-safe access to models
 - BatchProcessor per model for efficient inference
 """
-import logging
 import tempfile
 import os
 from typing import Dict, Optional, Tuple
 from collections import OrderedDict
 import joblib
-import asyncio
 from threading import Lock
 
 from .storage import ModelStorage
 from .database import SessionLocal, ModelMetadata
 from .batch import BatchProcessor
 
-logger = logging.getLogger(__name__)
+from .metrics import(
+    model_loads_total,
+    model_load_duration_seconds,
+    model_unloads_total,
+    models_loaded_gauge,
+    models_cache_capacity,
+    cache_hits_total,
+    cache_misses_total,
+    cache_evictions_total
+)
+from .logging_config import get_logger
+import time 
+logger = get_logger(__name__)
+
 
 
 class ModelManager:
@@ -39,6 +50,9 @@ class ModelManager:
         # Using OrderedDict for LRU tracking
         self._cache: OrderedDict[Tuple[str, str], Tuple[object, BatchProcessor, dict]] = OrderedDict()
         self._lock = Lock()  # Thread-safe access
+
+        # Set cache capacity metric
+        models_cache_capacity.set(max_models_in_memory)
         
         logger.info(f"ModelManager initialized (max_models={max_models_in_memory})")
     
@@ -50,6 +64,15 @@ class ModelManager:
         # OrderedDict maintains insertion order; first item is least recently used
         lru_key, (model, processor, metadata) = self._cache.popitem(last=False)
         model_name, version = lru_key
+
+        # Update metrics
+        cache_evictions_total.inc()
+        model_unloads_total.labels(
+            model_name=model_name,
+            model_version=version,
+            reason="lru_eviction"
+        ).inc()
+        models_loaded_gauge.set(len(self._cache))
         
         logger.info(f"Evicted LRU model: {model_name}:{version}")
         
@@ -97,12 +120,19 @@ class ModelManager:
             ValueError: if model not found in registry
             Exception: if download/load fails
         """
+        start_time = time.time()
         with self._lock:
             key = (model_name, version)
             
             # Already loaded? Just mark as recently used
             if key in self._cache:
                 self._move_to_end(key)
+                cache_hits_total.inc()
+                model_loads_total.labels(
+                    model_name=model_name,
+                    model_version=version,
+                    status="cache_hit"
+                ).inc()
                 logger.info(f"Model {model_name}:{version} already loaded (cache hit)")
                 return {
                     "status": "already_loaded",
@@ -110,6 +140,7 @@ class ModelManager:
                     "version": version,
                     "message": "Model was already in memory"
                 }
+            cache_misses_total.inc()
             
             # Get model metadata from database
             db = SessionLocal()
@@ -166,10 +197,28 @@ class ModelManager:
                         "s3_path": s3_path
                     }
                 )
+
+                # Update metrics
+                duration = time.time() - start_time
+                models_loaded_gauge.set(len(self._cache))
+                model_loads_total.labels(
+                    model_name=model_name,
+                    model_version=version,
+                    status="success"
+                ).inc()
+                model_load_duration_seconds.labels(
+                    model_name=model_name,
+                    model_version=version
+                ).observe(duration)
                 
                 logger.info(
-                    f"✓ Loaded {model_name}:{version} "
-                    f"(cache: {len(self._cache)}/{self.max_models})"
+                    "Model loaded successfully",
+                    extra={
+                        "model_name": model_name,
+                        "model_version": version,
+                        "duration_ms": duration * 1000,
+                        "cache_size": len(self._cache)
+                    }
                 )
                 
                 return {
@@ -180,7 +229,22 @@ class ModelManager:
                     "metadata": model_metadata,
                     "cache_size": len(self._cache)
                 }
-                
+            except Exception as e:
+                model_loads_total.labels(
+                    model_name=model_name,
+                    model_version=version,
+                    status="failure"
+                ).inc()
+                logger.error(
+                    "Failed to load model",
+                    extra={
+                        "model_name": model_name,
+                        "model_version": version,
+                        "error": str(e)
+                    },  
+                    exc_info=True
+                )
+                raise
             finally:
                 # Clean up temp file
                 if os.path.exists(local_path):
@@ -208,10 +272,22 @@ class ModelManager:
             model, processor, metadata = self._cache.pop(key)
             del model
             del processor
+
+            # Update metrics
+            models_loaded_gauge.set(len(self._cache))
+            model_unloads_total.labels(
+                model_name=model_name,
+                model_version=version,
+                reason="manual"
+            ).inc()
             
             logger.info(
-                f"Unloaded {model_name}:{version} "
-                f"(cache: {len(self._cache)}/{self.max_models})"
+                "Model unloaded successfully",
+                extra={
+                    "model_name": model_name,
+                    "model_version": version,
+                    "cache_size": len(self._cache)
+                }
             )
             
             return {

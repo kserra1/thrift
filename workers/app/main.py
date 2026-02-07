@@ -1,8 +1,8 @@
 """FastAPI worker service with S3 model loading."""
-from fastapi import FastAPI, HTTPException
+import time
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import joblib
-import logging
 from typing import List, Optional
 import os
 import tempfile
@@ -12,17 +12,40 @@ from .model_manager import ModelManager
 from .batch import BatchProcessor
 from .storage import ModelStorage
 from .database import init_db
+from .middleware import ObservabilityMiddleware
+from .logging_config import setup_logging, get_logger
+from .prediction_logger import prediction_logger
+from .metrics import (
+    predictions_total,
+    prediction_duration_seconds,
+    prediction_errors_total,
+    batch_size_histogram,
+    service_info
+)
+
+from prometheus_client import make_asgi_app
+
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup structured logging
+setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = get_logger(__name__)
 
 
 app = FastAPI(
     title="ML Serving Platform",
     description="Dynamic multi-model serving with on-demand loading",
-    version="2.0.0"
+    version="2.1.0"
 )
+# ==== Metrics Endpoint ====
+
+# Mount Promtheus metrics endpoint
+# This exposes /metrics for Prometheus to scrape
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+# Add observability middleware
+app.add_middleware(ObservabilityMiddleware)
 
 # Global model manager
 model_manager: Optional[ModelManager] = None
@@ -54,17 +77,36 @@ class PredictResponse(BaseModel):
 async def startup_event():
     """Initialize model manager and database."""
     global model_manager
+
+    logger.info("Starting Thrift ML Serving Platform...")
     
     # Initialize database
     init_db()
+    logger.info("Database initialized")
+
+    # Start prediction logger
+    await prediction_logger.start()
     
     # Create model manager (max 5 models in memory by default)
     max_models = int(os.getenv("MAX_MODELS_IN_MEMORY", 5))
     model_manager = ModelManager(max_models_in_memory=max_models)
-    
-    logger.info(f"ML Serving Platform started (max_models={max_models})")
-    logger.info("Models can be loaded dynamically via POST /models/load")
 
+    # Set service info metrics
+    service_info.info({
+        "version": "2.1.0",
+        "max_models": str(max_models)
+    })
+    logger.info(
+        "ML Serving Platform started",
+        extra={"max_models": max_models}
+    )
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    logger.info("Shutting down Thrift ML Serving Platform")
+    await prediction_logger.stop()
+    logger.info("Shutdown complete")
 
 # ===== Model Management Endpoints =====
 
@@ -93,7 +135,7 @@ async def load_model(request: LoadModelRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Error loading model: {e}")
+        logger.error(f"Error loading model: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
 
@@ -139,7 +181,7 @@ async def list_loaded_models():
 # ===== Prediction Endpoints =====
 
 @app.post("/models/{model_name}/versions/{version}/predict", response_model=PredictResponse)
-async def predict(model_name: str, version: str, request: PredictRequest):
+async def predict(model_name: str, version: str, request_body: PredictRequest, request: Request):
     """
     Make a prediction using a specific model version.
     
@@ -151,13 +193,46 @@ async def predict(model_name: str, version: str, request: PredictRequest):
             "features": [5.1, 3.5, 1.4, 0.2]
         }
     """
+    start_time = time.time()
     try:
         prediction = await model_manager.predict(
             model_name=model_name,
             version=version,
-            features=request.features
+            features=request_body.features
         )
-        
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Record metrics
+        predictions_total.labels(
+            model_name=model_name,
+            model_version=version
+        ).inc()
+
+        prediction_duration_seconds.labels(
+            model_name=model_name,
+            model_version=version
+        ).observe(time.time() - start_time)
+
+        # Log prediction asynchronously
+        client_ip = request.client.host if request.client else None
+        await prediction_logger.log(
+            model_name=model_name,
+            model_version=version,
+            features=request_body.features,
+            prediction=prediction,
+            latency_ms=latency_ms,
+            client_ip=client_ip
+        )
+
+        logger.info(
+            "Prediction completed",
+            extra={
+                "model_name": model_name,
+                "model_version": version,
+                "latency_ms": latency_ms,
+                "prediction": int(prediction)
+            }
+        )
         return PredictResponse(
             prediction=int(prediction),
             model_name=model_name,
@@ -165,16 +240,38 @@ async def predict(model_name: str, version: str, request: PredictRequest):
         )
     
     except ValueError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=str(e)
+        prediction_errors_total.labels(
+            model_name=model_name,
+            model_version=version,
+            error_type="model_not_loaded"
+        ).inc()
+        logger.warning("Prediction failed: model not loaded",
+                       extra={
+                "model_name": model_name,
+                "model_version": version}
         )
+        raise HTTPException(status_code=404, detail=str(e))
+
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
+        prediction_errors_total.labels(
+            model_name=model_name,
+            model_version=version,
+            error_type="prediction_error"
+        ).inc()
+        logger.error(
+            "Prediction failed",
+            extra={
+                "model_name": model_name,
+                "model_version": version,
+                "error": str(e)
+            },
+            exc_info=True
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Prediction failed: {str(e)}"
         )
+    
 
 
 # ===== Health & Info Endpoints =====
@@ -195,15 +292,19 @@ async def health():
 async def root():
     """Root endpoint with API info."""
     return {
-        "service": "ML Serving Platform",
-        "version": "2.0.0",
+        "service": "Thrift ML Serving Platform",
+        "version": "2.1.0",
         "features": [
             "Dynamic model loading",
             "Multi-model serving",
             "Automatic LRU eviction",
-            "Batch processing"
+            "Batch processing",
+            "Prometheus metrics",
+            "Structured logging",
+            "Request tracing"
         ],
         "endpoints": {
+            "metrics": "GET /metrics",
             "load_model": "POST /models/load",
             "unload_model": "POST /models/unload",
             "list_models": "GET /models",
@@ -211,3 +312,4 @@ async def root():
             "health": "GET /health"
         }
     }
+
