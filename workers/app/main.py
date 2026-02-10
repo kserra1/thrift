@@ -54,8 +54,8 @@ model_manager: Optional[ModelManager] = None
 class LoadModelRequest(BaseModel):
     model_name: str
     version: str
-    batch_size: int = 32
-    batch_wait_ms: int = 50
+    batch_size: Optional[int] = None
+    batch_wait_ms: Optional[int] = None
 
 
 class UnloadModelRequest(BaseModel):
@@ -125,11 +125,16 @@ async def load_model(request: LoadModelRequest):
         }
     """
     try:
+        default_batch_size = int(os.getenv("DEFAULT_BATCH_SIZE", 32))
+        default_batch_wait_ms = int(os.getenv("DEFAULT_BATCH_WAIT_MS", 50))
+        batch_size = request.batch_size if request.batch_size is not None else default_batch_size
+        batch_wait_ms = request.batch_wait_ms if request.batch_wait_ms is not None else default_batch_wait_ms
+
         result = model_manager.load_model(
             model_name=request.model_name,
             version=request.version,
-            batch_size=request.batch_size,
-            batch_wait_ms=request.batch_wait_ms
+            batch_size=batch_size,
+            batch_wait_ms=batch_wait_ms
         )
         return result
     except ValueError as e:
@@ -195,11 +200,30 @@ async def predict(model_name: str, version: str, request_body: PredictRequest, r
     """
     start_time = time.time()
     try:
-        prediction = await model_manager.predict(
-            model_name=model_name,
-            version=version,
-            features=request_body.features
-        )
+        try:
+            prediction = await model_manager.predict(
+                model_name=model_name,
+                version=version,
+                features=request_body.features
+            )
+        except ValueError as e:
+            # Auto-load on miss, then retry once
+            if "not loaded" in str(e):
+                default_batch_size = int(os.getenv("DEFAULT_BATCH_SIZE", 32))
+                default_batch_wait_ms = int(os.getenv("DEFAULT_BATCH_WAIT_MS", 50))
+                model_manager.load_model(
+                    model_name=model_name,
+                    version=version,
+                    batch_size=default_batch_size,
+                    batch_wait_ms=default_batch_wait_ms
+                )
+                prediction = await model_manager.predict(
+                    model_name=model_name,
+                    version=version,
+                    features=request_body.features
+                )
+            else:
+                raise
         latency_ms = (time.time() - start_time) * 1000
 
         # Record metrics
@@ -312,4 +336,3 @@ async def root():
             "health": "GET /health"
         }
     }
-

@@ -1,0 +1,8 @@
+/Users/kserra/Desktop/thrift/gateway/src/main/java/service/WorkerHealthService.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/model/WorkerInfo.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/service/ModelRegistryService.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/filter/ModelRoutingFilter.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/com/thrift/gateway/config/RedisConfig.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/com/thrift/gateway/GatewayApplication.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/com/thrift/gateway/config/RouteConfig.java
+/Users/kserra/Desktop/thrift/gateway/src/main/java/model/ModelLoadRequest.java

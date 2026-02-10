@@ -1,0 +1,9 @@
+com/thrift/gateway/config/RouteConfig.class
+com/thrift/gateway/model/ModelLoadRequest.class
+com/thrift/gateway/service/ModelRegistryService.class
+com/thrift/gateway/GatewayApplication.class
+com/thrift/gateway/filter/ModelRoutingFilter.class
+com/thrift/gateway/filter/ModelRoutingFilter$Config.class
+com/thrift/gateway/config/RedisConfig.class
+com/thrift/gateway/model/WorkerInfo.class
+com/thrift/gateway/service/WorkerHealthService.class

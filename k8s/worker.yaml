@@ -50,6 +50,16 @@ spec:
             configMapKeyRef:
               name: thrift-config
               key: BUCKET_NAME
+        - name: UVICORN_WORKERS
+          value: "2"
+        - name: DEFAULT_BATCH_SIZE
+          value: "32"
+        - name: DEFAULT_BATCH_WAIT_MS
+          value: "10"
+        - name: OMP_NUM_THREADS
+          value: "1"
+        - name: MKL_NUM_THREADS
+          value: "1"
         
         # Environment variables from Secret
         - name: MINIO_ACCESS_KEY

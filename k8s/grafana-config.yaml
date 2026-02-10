@@ -48,87 +48,221 @@ metadata:
 data:
   thrift.json: |
     {
-        "title": "Thrift ML Serving Platform",
-        "uid": "thrift-ml-serving",
-        "tags": ["ml", "serving"],
-        "timezone": "browser",
-        "schemaVersion": 38,
-        "version": 0,
-        "refresh": "5s",
-        "panels": [
-          {
-            "id": 1,
-            "title": "Request Rate",
-            "type": "timeseries",
-            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
-            "targets": [{
-              "expr": "rate(http_requests_total[5m])",
-              "legendFormat": "{{method}} {{endpoint}}",
+      "title": "Thrift ML Serving Platform",
+      "uid": "thrift-ml-serving",
+      "tags": ["ml", "serving"],
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "version": 0,
+      "refresh": "5s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [{
+            "expr": "sum by (method, endpoint) (rate(http_requests_total[5m]))",
+            "legendFormat": "{{method}} {{endpoint}}",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 2,
+          "title": "Request Latency (p50/p95/p99)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "p50",
               "refId": "A"
-            }],
-            "datasource": {"type": "prometheus", "uid": "prometheus"}
-          },
-          {
-            "id": 2,
-            "title": "Request Latency (p95, p99)",
-            "type": "timeseries",
-            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
-            "targets": [
-              {
-                "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
-                "legendFormat": "p95",
-                "refId": "A"
-              },
-              {
-                "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))",
-                "legendFormat": "p99",
-                "refId": "B"
-              }
-            ],
-            "datasource": {"type": "prometheus", "uid": "prometheus"}
-          },
-          {
-            "id": 3,
-            "title": "Predictions per Second",
-            "type": "timeseries",
-            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
-            "targets": [{
-              "expr": "rate(predictions_total[5m])",
-              "legendFormat": "{{model_name}}:{{model_version}}",
-              "refId": "A"
-            }],
-            "datasource": {"type": "prometheus", "uid": "prometheus"}
-          },
-          {
-            "id": 4,
-            "title": "Models Currently Loaded",
-            "type": "gauge",
-            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
-            "targets": [{
-              "expr": "models_loaded_current",
-              "refId": "A"
-            }],
-            "datasource": {"type": "prometheus", "uid": "prometheus"},
-            "options": {
-              "orientation": "auto",
-              "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
-              "showThresholdLabels": false,
-              "showThresholdMarkers": true
             },
-            "fieldConfig": {
-              "defaults": {
-                "max": 5,
-                "min": 0,
-                "thresholds": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"color": "green", "value": null},
-                    {"color": "yellow", "value": 3},
-                    {"color": "red", "value": 5}
-                  ]
-                }
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "p95",
+              "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "p99",
+              "refId": "C"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 3,
+          "title": "Error Rate (5xx)",
+          "type": "timeseries",
+          "gridPos": {"h": 6, "w": 12, "x": 0, "y": 8},
+          "targets": [{
+            "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+            "legendFormat": "5xx rate",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 3
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Predictions per Second",
+          "type": "timeseries",
+          "gridPos": {"h": 6, "w": 12, "x": 12, "y": 8},
+          "targets": [{
+            "expr": "sum by (model_name, model_version) (rate(predictions_total[5m]))",
+            "legendFormat": "{{model_name}}:{{model_version}}",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 5,
+          "title": "Prediction Latency (p50/p95)",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 14},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, model_name, model_version) (rate(prediction_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{model_name}}:{{model_version}} p50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, model_name, model_version) (rate(prediction_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{model_name}}:{{model_version}} p95",
+              "refId": "B"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 6,
+          "title": "Prediction Errors",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 14},
+          "targets": [{
+            "expr": "sum by (model_name, model_version, error_type) (rate(prediction_errors_total[5m]))",
+            "legendFormat": "{{model_name}}:{{model_version}} {{error_type}}",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 7,
+          "title": "Models Loaded (Current)",
+          "type": "gauge",
+          "gridPos": {"h": 7, "w": 6, "x": 0, "y": 21},
+          "targets": [{
+            "expr": "models_loaded_current",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "fieldConfig": {
+            "defaults": {
+              "max": 5,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 3},
+                  {"color": "red", "value": 5}
+                ]
               }
             }
           }
-        ]
+        },
+        {
+          "id": 8,
+          "title": "Cache Hit Ratio",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 6, "x": 6, "y": 21},
+          "targets": [{
+            "expr": "sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))",
+            "legendFormat": "hit ratio",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 3
+            }
+          }
+        },
+        {
+          "id": 9,
+          "title": "Model Load Time (p95)",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 6, "x": 12, "y": 21},
+          "targets": [{
+            "expr": "histogram_quantile(0.95, sum by (le, model_name, model_version) (rate(model_load_duration_seconds_bucket[5m])))",
+            "legendFormat": "{{model_name}}:{{model_version}} p95",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 10,
+          "title": "Model Loads/Unloads",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 6, "x": 18, "y": 21},
+          "targets": [
+            {
+              "expr": "sum by (model_name, model_version, status) (rate(model_loads_total[5m]))",
+              "legendFormat": "load {{model_name}}:{{model_version}} {{status}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (model_name, model_version, reason) (rate(model_unloads_total[5m]))",
+              "legendFormat": "unload {{model_name}}:{{model_version}} {{reason}}",
+              "refId": "B"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 11,
+          "title": "Batch Size (p50/p95)",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 28},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, model_name, model_version) (rate(batch_size_bucket[5m])))",
+              "legendFormat": "{{model_name}}:{{model_version}} p50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, model_name, model_version) (rate(batch_size_bucket[5m])))",
+              "legendFormat": "{{model_name}}:{{model_version}} p95",
+              "refId": "B"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "id": 12,
+          "title": "Batch Wait Time (p95)",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 28},
+          "targets": [{
+            "expr": "histogram_quantile(0.95, sum by (le, model_name, model_version) (rate(batch_wait_duration_seconds_bucket[5m])))",
+            "legendFormat": "{{model_name}}:{{model_version}} p95",
+            "refId": "A"
+          }],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
     }

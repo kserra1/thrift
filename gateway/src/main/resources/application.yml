@@ -1,0 +1,86 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: thrift-gateway
+
+  task:
+    scheduling:
+      pool:
+        size: 5
+  
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  
+  # Redis configuration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+  
+  # Gateway configuration
+  cloud:
+    gateway:
+      # Global timeout settings
+      httpclient:
+        connect-timeout: 5000
+        response-timeout: 30s
+      
+      # Default filters for all routes
+      default-filters:
+        - name: Retry
+          args:
+            retries: 2
+            statuses: BAD_GATEWAY,GATEWAY_TIMEOUT
+            methods: GET,POST
+        - name: CircuitBreaker
+          args:
+            name: workerCircuitBreaker
+            fallbackUri: forward:/fallback
+
+# Worker discovery
+workers:
+  # These will be discovered from Kubernetes service
+  kubernetes:
+    namespace: ${K8S_NAMESPACE:thrift}
+    service: ${K8S_SERVICE:thrift-worker-service}
+    port: 80
+    targetPort: 8000
+    # Fallback to static list if not in K8s
+  static:
+    - host: localhost
+      port: 8000
+
+# Model registry settings
+model-registry:
+  redis-key-prefix: "model:"
+  worker-load-key-prefix: "worker:load:"
+  ttl-seconds: 3600  # Cache worker assignments for 1 hour
+
+# Health check settings
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics,info
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.thrift.gateway: DEBUG
+    org.springframework.cloud.gateway: DEBUG

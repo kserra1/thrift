@@ -16,6 +16,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: thrift-worker-service
+            name: gateway
             port:
-              number: 80
+              number: 8080

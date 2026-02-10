@@ -76,6 +76,11 @@ services:
       BUCKET_NAME: models
       LOG_LEVEL: INFO #DEBUG, INFO, WARNING, ERROR 
       MAX_MODELS_IN_MEMORY: "5"
+      UVICORN_WORKERS: "2"
+      DEFAULT_BATCH_SIZE: "32"
+      DEFAULT_BATCH_WAIT_MS: "10"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,12 +141,56 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-gateway.conf:/etc/nginx/nginx.conf:ro
     depends_on:
+      - gateway
       - worker
     networks:
       - thrift-net
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: thrift-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - thrift-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: thrift-gateway:latest
+    container_name: thrift-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      K8S_NAMESPACE: thrift
+      # Static worker config for Docker Compose
+      SPRING_PROFILES_ACTIVE: docker-compose
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    networks:
+      - thrift-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+
 
 volumes:
   postgres_data:
